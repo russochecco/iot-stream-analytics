@@ -1,0 +1,20 @@
+[project]
+name = "temperature-telemetry-pipeline"
+version = "0.1.0"
+description = "Streaming data pipeline to ingest real-time temperature telemetry and generate real-time analytics"
+authors = [
+    { name = "Francesco Russo", email = "russo.checco@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.poetry.dependencies]
+pyspark = { version = "3.5.4", extras = ["sql"] }
+influxdb-client = ">=1.9.0"
+
+[tool.poetry]
+packages = [{ include = "temperature_telemetry_pipeline", from = "src" }]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
