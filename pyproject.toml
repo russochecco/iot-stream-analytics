@@ -1,7 +1,7 @@
 [project]
 name = "temperature-telemetry-pipeline"
 version = "0.1.0"
-description = "Streaming data pipeline to ingest real-time temperature telemetry and generate real-time analytics"
+description = "Example of a Streaming Data Pipeline for Ingesting Real-Time Temperature Telemetry and Generating Analytics"
 authors = [
     { name = "Francesco Russo", email = "russo.checco@gmail.com" }
 ]

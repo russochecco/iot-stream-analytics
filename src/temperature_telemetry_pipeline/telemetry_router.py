@@ -54,11 +54,12 @@ def process_batch(batch_df, batch_id):
         # ---------------------
         # Parse records
         # ---------------------
-        records_df = (events_df.select(
-            "kafka_key",
-            "kafka_value",
-            F.from_json(F.col("kafka_value"), RECORD_SCHEMA).alias("record")
-        ))
+        records_df = (
+            events_df.select(
+                "kafka_key",
+                "kafka_value",
+                F.from_json(F.col("kafka_value"), RECORD_SCHEMA).alias("record")
+            ))
 
         # ---------------------
         # Validate content

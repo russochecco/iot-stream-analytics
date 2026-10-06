@@ -1,0 +1,1 @@
+# Example of a Streaming Data Pipeline for Ingesting Real-Time Temperature Telemetry and Generating Analytics

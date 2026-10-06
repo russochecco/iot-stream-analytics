@@ -41,9 +41,8 @@ logger = logging.getLogger(APP_NAME)
 
 def write_influx_points(partition_it, url, token, org, bucket):
     # ---------------------
-    # Executes cleanly inside Spark Workers. Configs explicitly passed via partial
+    # Create an InfluxDB client for each worker
     # ---------------------
-
     with InfluxDBClient(url=url, token=token, org=org) as client:
         write_api = client.write_api(write_options=SYNCHRONOUS)
 
