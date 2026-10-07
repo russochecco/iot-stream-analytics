@@ -4,10 +4,11 @@ An example of a production-grade, event-driven streaming data pipeline for proce
 ## Architecture Overview
 To guarantee loose coupling, fault tolerance, and workload isolation, the pipeline splits the data flow into two specialized Spark streaming applications:
 
-<figure style="text-align: center;">
-  <img src="images/blueprint.png">
-  <figcaption>High-Level Blueprint</figcaption>
-</figure>
+<p align="center">
+  <img src="images/blueprint.png" width="100%">
+  <br>
+  High-Level Blueprint
+</p>
 
 ### 1. Samples Router
 - Consumes raw payloads from the initial Kafka input topic (iot.samples.raw).
