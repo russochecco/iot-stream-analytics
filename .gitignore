@@ -2,3 +2,4 @@
 .venv
 .submit*
 poetry.lock
+__pycache__/
