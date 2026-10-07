@@ -49,7 +49,7 @@ def write_influx_points(partition_it, url, token, org, bucket):
 
             for row in partition_it:
                 point = (
-                    Point("device_telemetry")
+                    Point("device-telemetry")
                     .tag("device_id", row["device_id"])
                     .tag("sensor_id", row["sensor_id"])
                     .field("temperature", float(row["temperature"]))

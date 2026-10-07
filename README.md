@@ -9,15 +9,15 @@ To guarantee loose coupling, fault tolerance, and workload isolation, the pipeli
   <figcaption>High-Level Blueprint</figcaption>
 </figure>
 
-### 1. Telemetry Router (router)
-- Consumes raw payloads from the initial Kafka input topic.
+### 1. Samples Router (samples_router)
+- Consumes raw payloads from the initial Kafka input topic (iot.samples.raw).
 - Parses JSON records and enforces schema structure constraints.
 - **Data Cleansing & Validation**: Checks for corrupted JSON or physically impossible telemetry values (e.g., negative temperatures or power ratings).
-- **Dynamic Routing**: Diverts corrupted or invalid messages to a Kafka Dead Letter Queue (DLQ) topic for debugging, while valid data passes to a processed records topic.
-- **Audit Trail**: Appends every incoming event's raw metadata footprint into a daily partitioned **Apache Iceberg lakehouse table**.
+- **Dynamic Routing**: Diverts corrupted or invalid messages to a Kafka Dead Letter Queue (DLQ) topic (iot.samples.dlq) for debugging, while valid data passes to a refined samples topic (iot.samples.refined).
+- **Audit Trail**: Appends every incoming event's raw metadata footprint into a daily partitioned **Apache Iceberg lakehouse table** (iot_stream_analytics.events).
 
-### 2. Telemetry Processor (processor)
-- Consumes validated telemetry text streams from the downstream Kafka records topic.
+### 2. Samples Processor (samples_processor)
+- Consumes validated telemetry streams from the downstream Kafka refined samples topic.
 - Computes metadata observability metrics like **network lag** and **ingestion pipeline latency** in real time.
-- **SLA & Anomaly Monitoring**: Evaluates thresholds inline (>85.0&deg;C or >1500W). If violated, it surfaces immediate alert notifications back out to an asynchronous Kafka alerts queue.
-- **Time-Series Sink**: Micro-batches are partitioned and distributed across workers to perform high-throughput chunked writes (500 points/batch max) into **InfluxDB** for live monitoring dashboards.
+- **SLA & Anomaly Monitoring**: Evaluates thresholds inline (temperature>85.0&deg;C or power>1500W). If violated, it surfaces immediate alert notifications back out to an asynchronous Kafka alerts queue (iot.alerts.anomaly).
+- **Time-Series Sink**: Micro-batches are partitioned and distributed across workers to perform high-throughput chunked writes (500 points/batch max) into an **InfluxDB** bucket (iot-stream-analytics) for live monitoring dashboards.
