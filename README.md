@@ -9,14 +9,14 @@ To guarantee loose coupling, fault tolerance, and workload isolation, the pipeli
   <figcaption>High-Level Blueprint</figcaption>
 </figure>
 
-### 1. Samples Router (samples_router)
+### 1. Samples Router
 - Consumes raw payloads from the initial Kafka input topic (iot.samples.raw).
 - Parses JSON records and enforces schema structure constraints.
 - **Data Cleansing & Validation**: Checks for corrupted JSON or physically impossible telemetry values (e.g., negative temperatures or power ratings).
 - **Dynamic Routing**: Diverts corrupted or invalid messages to a Kafka Dead Letter Queue (DLQ) topic (iot.samples.dlq) for debugging, while valid data passes to a refined samples topic (iot.samples.refined).
 - **Audit Trail**: Appends every incoming event's raw metadata footprint into a daily partitioned **Apache Iceberg lakehouse table** (iot_stream_analytics.events).
 
-### 2. Samples Processor (samples_processor)
+### 2. Samples Processor
 - Consumes validated telemetry streams from the downstream Kafka refined samples topic.
 - Computes metadata observability metrics like **network lag** and **ingestion pipeline latency** in real time.
 - **SLA & Anomaly Monitoring**: Evaluates thresholds inline (temperature>85.0&deg;C or power>1500W). If violated, it surfaces immediate alert notifications back out to an asynchronous Kafka alerts queue (iot.alerts.anomaly).
