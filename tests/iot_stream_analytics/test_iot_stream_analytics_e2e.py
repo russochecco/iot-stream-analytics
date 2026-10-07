@@ -2,6 +2,8 @@ import time
 import json
 import random
 import logging
+import pytest
+
 from datetime import datetime, timezone
 from kafka import KafkaProducer
 
@@ -22,7 +24,8 @@ def json_serializer(data):
     return json.dumps(data).encode("utf-8")
 
 
-def generate_iot_stream():
+@pytest.mark.e2e
+def test_pipeline_streaming_logic():
     producer = None
 
     # Wait for Kafka availability
@@ -113,7 +116,3 @@ def generate_iot_stream():
     finally:
         producer.flush()
         producer.close()
-
-
-if __name__ == "__main__":
-    generate_iot_stream()

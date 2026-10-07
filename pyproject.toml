@@ -7,14 +7,27 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-
-[tool.poetry.dependencies]
-pyspark = { version = "3.5.4", extras = ["sql"] }
-kafka-python = ">=3.0.11"
-influxdb-client = ">=1.9.0"
+dependencies = [
+    "pyspark[sql]==3.5.4",
+    "influxdb-client>=1.9.0"
+]
 
 [tool.poetry]
 packages = [{ include = "iot_stream_analytics", from = "src" }]
+
+[dependency-groups]
+dev = [
+    "kafka-python>=3.0.11",
+    "pytest>=8.0.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+log_cli = true
+log_cli_level = "INFO"
+markers = [
+    "e2e: marks tests as end-to-end integration tests (requires docker containers)"
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
