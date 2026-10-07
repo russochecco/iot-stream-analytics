@@ -7,6 +7,7 @@ To guarantee loose coupling, fault tolerance, and workload isolation, the pipeli
 <p align="center">
   <img src="images/blueprint.png" width="70%">
   <br>
+  <br>
   High-Level Blueprint
 </p>
 
