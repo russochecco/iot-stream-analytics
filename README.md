@@ -5,7 +5,7 @@ An example of a production-grade, event-driven streaming data pipeline for proce
 To guarantee loose coupling, fault tolerance, and workload isolation, the pipeline splits the data flow into two specialized Spark streaming applications:
 
 <p align="center">
-  <img src="images/blueprint.png" width="100%">
+  <img src="images/blueprint.png" width="75%">
   <br>
   High-Level Blueprint
 </p>
