@@ -1,4 +1,4 @@
-# Real-Time IoT Temperature Telemetry & Analytics Pipeline
+# Real-Time IoT Stream Analytics Pipeline
 An example of a production-grade, event-driven streaming data pipeline for processing temperature telemetry data, built with PySpark Structured Streaming, Apache Kafka, Apache Iceberg, and InfluxDB. The data flow ingests raw device telemetry, validates payloads against strict schema rules, routes invalid data to a Dead Letter Queue (DLQ), triggers real-time anomaly alerts, and sinks analytical data into both a time-series database and an open lakehouse table, providing analytics capabilities for both online and offline queries.
 
 ## Architecture Overview
