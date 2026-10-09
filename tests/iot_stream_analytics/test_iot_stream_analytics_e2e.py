@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from kafka import KafkaProducer
 
 KAFKA_SAMPLES_RAW_TOPIC = "iot.samples.raw"
-KAFKA_BOOTSTRAP_SERVERS = ["localhost:9092"]
+KAFKA_BOOTSTRAP_SERVERS = "127.0.0.1:9092"
 APP_NAME = "IoTSamplesGenerator"
 
 logging.basicConfig(
