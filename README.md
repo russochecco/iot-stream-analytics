@@ -2,39 +2,51 @@
 An example of a production-grade, event-driven streaming data pipeline for processing temperature telemetry data, built with PySpark Structured Streaming, Apache Kafka, Apache Iceberg, and InfluxDB. The data flow ingests raw device telemetry, validates payloads against strict schema rules, routes invalid data to a Dead Letter Queue (DLQ), triggers real-time anomaly alerts, and sinks analytical data into both a time-series database and an open lakehouse table, providing analytical capabilities for both online and offline queries.
 
 ## Architecture Overview
-To guarantee loose coupling, fault tolerance, and workload isolation, the pipeline splits the data flow into two specialized Spark streaming applications:
+The system uses a decoupled, event-driven streaming architecture. To ensure fault tolerance, isolation, and scalability, the data flow is divided into two specialized **PySpark Structured Streaming** applications that communicate through **Apache Kafka** topics:
 
 <div align="center">
-  <img src="images/blueprint.png" alt="High-Level Blueprint" width="75%">
+  <img src="images/blueprint.png" alt="High-Level Blueprint" width="80%">
   <p><em>High-Level Blueprint</em></p>
 </div>
 
-### 1. Samples Router
-- **Ingestion**: Consumes raw payloads from the initial Kafka input topic (`iot.samples.raw`).
-- **Parsing**: Parses JSON records and enforces schema structure constraints.
-- **Data Cleansing & Validation**: Checks for corrupted JSON or physically impossible telemetry values (e.g., negative temperatures or power ratings).
-- **Dynamic Routing**: Diverts corrupted or invalid messages to a Kafka Dead Letter Queue (DLQ) topic (`iot.samples.dlq`) for debugging, while valid data passes to a refined samples topic (`iot.samples.refined`).
-- **Audit Trail**: Appends every incoming event's raw metadata footprint into a daily partitioned **Apache Iceberg lakehouse table** (`iot_stream_analytics.events`).
+### Component Breakdown
 
-### 2. Samples Processor
-- **Consumption**: Consumes validated telemetry streams from the downstream Kafka refined samples topic (`iot.samples.refined`).
-- **Metrics Calculation**: Computes metadata observability metrics like **network lag** and **ingestion pipeline latency** in real time.
-- **SLA & Anomaly Monitoring**: Evaluates thresholds inline (`temperature` > 85.0°C or `power` > 1500W). If violated, it surfaces immediate alert notifications back out to an asynchronous Kafka alerts queue (`iot.alerts.anomaly`).
-- **Time-Series Sink**: Micro-batches are partitioned and distributed across workers to perform high-throughput chunked writes (500 points/batch max) into an **InfluxDB** bucket (`iot-stream-analytics`) for live monitoring dashboards.
+#### 1. Data Ingestion & Source
+- **Edge Sensors**: Hardware modules deployed indoors and outdoors stream JSON payloads containing a unique `device_id`, `sensor_id`, `event_timestamp`, `temperature`, and `power` consumption.
+- **Raw Topic** (`iot.samples.raw`): Actively ingests the raw, unvalidated JSON streams directly from the edge devices.
+
+#### 2. Application 1: Samples Router
+- **Parsing & Cleansing**: Ingests data from the Kafka topic `iot.samples.raw`, parses the JSON against a strict schema contract, and checks for corrupted data or physically impossible anomalies (such as negative power draw).
+- **Dynamic Routing**:
+	- **Valid Data**: Sent to `iot.samples.refined` for downstream operational processing.
+	- **Invalid Data/Dead Letter Queue (DLQ)**: Sent to `iot.samples.dlq` so structurally failing payloads can be isolated and debugged without crashing the main application.
+- **Cold Storage Lakehouse**: Simultaneously appends an audit trail of every raw metadata event footprint into the daily partitioned Apache Iceberg table `iot_stream_analytics.events` for offline historical queries.
+
+#### 3. Application 2: Samples Processor
+- **Consumption**: Subscribes strictly to the validated data stream coming from `iot.samples.refined`.
+- **Metrics & Monitoring**: Computes operational health metrics (like network lag and pipeline latency).
+- **SLA & Real-Time Alerting**: Evaluates data against safety thresholds inline (e.g., checks if `temperature` > 85.0°C or `power` > 1500W). If an anomaly occurs, it instantly publishes a notification to `iot.alerts.anomaly`.
+- **Hot Storage Sink**: Distributes and streams micro-batches in parallel across worker nodes into the InfluxDB bucket `iot-stream-analytics` for real-time visualization dashboards.
+
+## Physical Deployment & Data Context
+The pipeline processes telemetry from a specialized network of multi-sensor hardware modules deployed **inside and outside target rooms**. Each physical asset is tracked via unique `device_id` and `sensor_id` mappings, streaming three core dimensions:
+- **Temperature** (`temperature`): Captures the localized ambient/room temperature where the specific sensor ID is physically installed (supporting both indoor climates and sub-zero outdoor environments).
+- **Power Consumption** (`power`): Monitors the real-time electrical draw of the localized equipment.
+- **Temporal Markers** (`event_timestamp`): Provides the exact event-generation time directly from the edge.
 
 
 ## Tech Stack & Patterns
-- **Stream Processing**: PySpark Structured Streaming (`foreachBatch` mechanics)
-- **Message Broker**: Apache Kafka (multi-topic orchestration, DLQ pattern, alerting)
-- **Storage & Lakehouse**: Apache Iceberg (ACID transactions, daily partitioning)
-- **Time Series DB**: InfluxDB v2 (thread-safe worker partition chunking via `influxdb-client`)
+- **Stream Processing**: PySpark Structured Streaming (`foreachBatch` mechanics).
+- **Message Broker**: Apache Kafka (multi-topic orchestration, DLQ pattern, alerting).
+- **Storage & Lakehouse**: Apache Iceberg (ACID transactions, daily partitioning).
+- **Time Series DB**: InfluxDB v2 (thread-safe worker partition chunking via `influxdb-client`).
 - **Resiliency & Observability**: Memory and disk micro-batch persistence (`StorageLevel.MEMORY_AND_DISK`), checkpointing recovery systems, and descriptive application logging.
 
 ## Getting Started
 
 ### Prerequisites
 - Python 3.10+
-- Apache Spark 3.4+ (configured with Kafka & Iceberg runtime JARs)
+- Apache Spark 3.5+ (configured with Kafka & Iceberg runtime JARs to match the deploy targets)
 - Running instances of Apache Kafka, InfluxDB v2, MinIO, and your target Catalog (e.g., Hive/REST) for Apache Iceberg.
 
 ### Environment Configuration
@@ -106,9 +118,11 @@ Inbound events must match the following JSON contract layout:
 }
 ```
 
-### Validation & Routing Rules
-- **Valid**: Payload conforms to schema; `temperature` and `power` are positive values and do not exceed the maximum thresholds (`temperature` ≤ 85.0°C and `power` ≤ 1500W).
-- **Invalid (DLQ Bound)**: JSON corruption, missing fields, negative metric entries, or values exceeding safe operational thresholds (`temperature` > 85.0°C or `power` > 1500W).
+## Validation & Routing Rules
+- **Valid**: Payload structurally conforms to the JSON layout and device `power` is a positive value.
+- **Invalid (DLQ Bound)**: Payload contains JSON corruption, structural syntax malformations, missing required fields, or physically impossible anomalies (such as negative power draw).
+
+*Note: Sub-zero temperature readings are treated as valid data to support outdoor environmental sensors. Furthermore, payloads containing critical threshold breaches (e.g., temperature > 85.0°C or power > 1500W) are explicitly handled as structurally valid and passed downstream so they can successfully trigger real-time alerts in the Samples Processor application.*
 
 ## Optimization & Resilience Engineering
 - **Distributed InfluxDB Writes**: Instead of collecting data to the driver, writes are executed in parallel across Spark worker partitions (`rdd.foreachPartition`) utilizing specialized connection chunking features.
