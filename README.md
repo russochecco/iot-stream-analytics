@@ -6,7 +6,8 @@ The system uses a decoupled, event-driven streaming architecture. To ensure faul
 
 <div align="center">
   <img src="images/blueprint.png" alt="High-Level Blueprint" width="80%">
-  <p><em>High-Level Blueprint</em></p>
+  <br>
+  <p>High-Level Blueprint</p>
 </div>
 
 ### Component Breakdown
