@@ -75,8 +75,7 @@ The project follows a modular, production-ready Poetry workspace layout:
 ### Environment Configuration
 The scripts rely entirely on decoupled environment properties. Create a `.env` file or export the following properties before launching:
 
-<pre><code>
-# Spark Settings
+<pre><code># Spark Settings
 export SPARK_CHECKPOINT_LOCATION="/path/to/spark/checkpoints"
 
 # Kafka Settings
