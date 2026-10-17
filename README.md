@@ -41,6 +41,30 @@ The pipeline processes telemetry from a specialized network of multi-sensor hard
 - **Time Series DB**: InfluxDB v2 (thread-safe worker partition chunking via `influxdb-client`).
 - **Resiliency & Observability**: Memory and disk micro-batch persistence (`StorageLevel.MEMORY_AND_DISK`), checkpointing recovery systems, and descriptive application logging.
 
+
+## Repository Structure
+
+The project follows a modular, production-ready Poetry workspace layout:
+
+```text
+.
+├── README.md
+├── images/
+│   └── blueprint.png                                # End-to-end multi-app pipeline architecture diagram
+├── poetry.lock                                      # Pinlocked dependency tree ledger
+├── pyproject.toml                                   # Poetry build system, package definitions, and configs
+├── src/
+│   └── iot_stream_analytics/                        # Core production streaming application logic
+│       ├── __init__.py
+│       ├── samples_processor.py                     # App 2: Real-time anomaly alerts & InfluxDB metric sinks
+│       └── samples_router.py                        # App 1: Kafka ingestion schema validation, routing, & Iceberg DLQ
+└── tests/
+    └── iot_stream_analytics/                        # End-to-end integration test framework
+        ├── __init__.py
+        └── test_iot_stream_analytics_e2e.py        # Mock telemetry generation engine & pipeline test suite
+```
+
+
 ## Getting Started
 
 ### Prerequisites
@@ -74,11 +98,12 @@ export ICEBERG_CATALOG_NAMESPACE="iceberg_catalog.bronze.iot_stream_analytics"
 ```
 
 ## Running the Pipeline
-To run the pipeline, submit the jobs to your Spark cluster using `spark-submit` following the examples below.
 
-### 1. Start the Input Router & Validation Pipeline
-```bash
-spark-submit \
+To run the pipeline components locally or on your cluster, follow these steps sequentially.
+
+1. **Start the Input Router & Validation Pipeline (Application 1):**
+<div>
+<pre><code>poetry run spark-submit \
   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2 \
   --conf spark.sql.extensions="org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
   --conf spark.sql.catalog.iceberg_catalog="org.apache.iceberg.spark.SparkCatalog" \
@@ -91,16 +116,15 @@ spark-submit \
   --conf spark.hadoop.fs.s3a.path.style.access="true" \
   --conf spark.hadoop.fs.s3a.connection.ssl.enabled="false" \
   --conf spark.hadoop.fs.s3a.impl="org.apache.hadoop.fs.s3a.S3AFileSystem" \
-  samples_router.py
-```
+  src/iot_stream_analytics/samples_router.py</code></pre>
+</div>
 
-### 2. Start the Analytics & InfluxDB Processor Pipeline
-```bash
-spark-submit \
+2. **Start the Analytics & InfluxDB Processor Pipeline (Application 2):**
+<div>
+<pre><code>poetry run spark-submit \
   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4 \
-  samples_processor.py
-```
-
+  src/iot_stream_analytics/samples_processor.py</code></pre>
+</div>
 
 ## Data Contracts
 
