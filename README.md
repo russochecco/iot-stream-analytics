@@ -75,7 +75,7 @@ The project follows a modular, production-ready Poetry workspace layout:
 ### Environment Configuration
 The scripts rely entirely on decoupled environment properties. Create a `.env` file or export the following properties before launching:
 
-<pre>
+<pre><code>
 # Spark Settings
 export SPARK_CHECKPOINT_LOCATION="/path/to/spark/checkpoints"
 
@@ -94,16 +94,14 @@ export INFLUX_ORG="your-organization"
 export INFLUX_BUCKET="iot-stream-analytics"
 
 # Apache Iceberg Settings
-export ICEBERG_CATALOG_NAMESPACE="iceberg_catalog.bronze.iot_stream_analytics"
-</pre>
+export ICEBERG_CATALOG_NAMESPACE="iceberg_catalog.bronze.iot_stream_analytics"</code></pre>
 
 ## Running the Pipeline
 
 To run the pipeline components locally or on your cluster, follow these steps sequentially.
 
 1. **Start the Input Router & Validation Pipeline (Application 1):**
-<pre>
-poetry run spark-submit \
+<pre><code>poetry run spark-submit \
   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2 \
   --conf spark.sql.extensions="org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
   --conf spark.sql.catalog.iceberg_catalog="org.apache.iceberg.spark.SparkCatalog" \
@@ -116,14 +114,12 @@ poetry run spark-submit \
   --conf spark.hadoop.fs.s3a.path.style.access="true" \
   --conf spark.hadoop.fs.s3a.connection.ssl.enabled="false" \
   --conf spark.hadoop.fs.s3a.impl="org.apache.hadoop.fs.s3a.S3AFileSystem" \
-  src/iot_stream_analytics/samples_router.py
-</pre>
+  src/iot_stream_analytics/samples_router.py</code></pre>
 
 2. **Start the Analytics & InfluxDB Processor Pipeline (Application 2):**
-<pre>poetry run spark-submit \
+<pre><code>poetry run spark-submit \
   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4 \
-  src/iot_stream_analytics/samples_processor.py
-</pre>
+  src/iot_stream_analytics/samples_processor.py</code></pre>
 
 ## Data Contracts
 
@@ -156,6 +152,4 @@ The script `test_iot_stream_analytics_e2e.py`, located in the `tests/iot_stream_
 
 To execute this end-to-end test script, run the following command:
 
-<pre><code>
-poetry run pytest tests/iot_stream_analytics/test_iot_stream_analytics_e2e.py</code>
-</pre>
+<pre><code>poetry run pytest tests/iot_stream_analytics/test_iot_stream_analytics_e2e.py</code></pre>
