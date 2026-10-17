@@ -156,6 +156,6 @@ The script `test_iot_stream_analytics_e2e.py`, located in the `tests/iot_stream_
 
 To execute this end-to-end test script, run the following command:
 
-<pre>
-poetry run pytest tests/iot_stream_analytics/test_iot_stream_analytics_e2e.py
+<pre><code>
+poetry run pytest tests/iot_stream_analytics/test_iot_stream_analytics_e2e.py</code>
 </pre>
