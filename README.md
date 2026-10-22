@@ -56,8 +56,8 @@ The project follows a modular, production-ready Poetry workspace layout:
 ├── src/
 │   └── iot_stream_analytics/                        # Core production streaming application logic
 │       ├── __init__.py
-│       ├── samples_processor.py                     # App 2: Real-time anomaly alerts & InfluxDB metric sinks
-│       └── samples_router.py                        # App 1: Kafka ingestion schema validation, routing, & Iceberg DLQ
+│       ├── processor.py                             # App 2: Real-time anomaly alerts & InfluxDB metric sinks
+│       └── router.py                                # App 1: Kafka ingestion schema validation, routing, & Iceberg DLQ
 └── tests/
     └── iot_stream_analytics/                        # End-to-end integration test framework
         ├── __init__.py
@@ -113,12 +113,12 @@ To run the pipeline components locally or on your cluster, follow these steps se
   --conf spark.hadoop.fs.s3a.path.style.access="true" \
   --conf spark.hadoop.fs.s3a.connection.ssl.enabled="false" \
   --conf spark.hadoop.fs.s3a.impl="org.apache.hadoop.fs.s3a.S3AFileSystem" \
-  src/iot_stream_analytics/samples_router.py</code></pre>
+  src/iot_stream_analytics/router.py</code></pre>
 
 2. **Start the Analytics & InfluxDB Processor Pipeline (Application 2):**
 <pre><code>poetry run spark-submit \
   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4 \
-  src/iot_stream_analytics/samples_processor.py</code></pre>
+  src/iot_stream_analytics/processor.py</code></pre>
 
 ## Data Contracts
 

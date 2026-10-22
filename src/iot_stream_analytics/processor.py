@@ -19,7 +19,7 @@ INFLUX_URL = os.environ["INFLUX_URL"]
 INFLUX_TOKEN = os.environ["INFLUX_TOKEN"]
 INFLUX_ORG = os.environ["INFLUX_ORG"]
 INFLUX_BUCKET = os.environ["INFLUX_BUCKET"]
-APP_NAME = "SamplesProcessor"
+APP_NAME = "Processor"
 MAX_CHUNK_SIZE = 500
 
 SAMPLE_SCHEMA = StructType([
