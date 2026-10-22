@@ -14,14 +14,14 @@ The system uses a decoupled, event-driven streaming architecture. To ensure faul
 - **Edge Sensors**: Hardware modules deployed indoors and outdoors stream JSON payloads containing a unique `device_id`, `sensor_id`, `event_timestamp`, `temperature`, and `power` consumption.
 - **Raw Topic** (`iot.samples.raw`): Actively ingests the raw, unvalidated JSON streams directly from the edge devices.
 
-#### 2. Application 1: Samples Router
+#### 2. Application 1: Router
 - **Parsing & Cleansing**: Ingests data from the Kafka topic `iot.samples.raw`, parses the JSON against a strict schema contract, and checks for corrupted data or physically impossible anomalies (such as negative power draw).
 - **Dynamic Routing**:
 	- **Valid Data**: Sent to `iot.samples.refined` for downstream operational processing.
 	- **Invalid Data/Dead Letter Queue (DLQ)**: Sent to `iot.samples.dlq` so structurally failing payloads can be isolated and debugged without crashing the main application.
 - **Cold Storage Lakehouse**: Simultaneously appends an audit trail of every raw metadata event footprint into the daily partitioned Apache Iceberg table `iot_stream_analytics.events` for offline historical queries.
 
-#### 3. Application 2: Samples Processor
+#### 3. Application 2: Processor
 - **Consumption**: Subscribes strictly to the validated data stream coming from `iot.samples.refined`.
 - **Metrics & Monitoring**: Computes operational health metrics (like network lag and pipeline latency).
 - **SLA & Real-Time Alerting**: Evaluates data against safety thresholds inline (e.g., checks if `temperature` > 85.0°C or `power` > 1500W). If an anomaly occurs, it instantly publishes a notification to `iot.alerts.anomaly`.
@@ -139,7 +139,7 @@ Inbound events must match the following JSON contract layout:
 - **Valid**: Payload structurally conforms to the JSON layout and device `power` is a positive value.
 - **Invalid (DLQ Bound)**: Payload contains JSON corruption, structural syntax malformations, missing required fields, or physically impossible anomalies (such as negative power draw).
 
-*Note: Sub-zero temperature readings are treated as valid data to support outdoor environmental sensors. Furthermore, payloads containing critical threshold breaches (e.g., temperature > 85.0°C or power > 1500W) are explicitly handled as structurally valid and passed downstream so they can successfully trigger real-time alerts in the Samples Processor application.*
+*Note: Sub-zero temperature readings are treated as valid data to support outdoor environmental sensors. Furthermore, payloads containing critical threshold breaches (e.g., temperature > 85.0°C or power > 1500W) are explicitly handled as structurally valid and passed downstream so they can successfully trigger real-time alerts in the Processor application.*
 
 ## Optimization & Resilience Engineering
 - **Distributed InfluxDB Writes**: Instead of collecting data to the driver, writes are executed in parallel across Spark worker partitions (`rdd.foreachPartition`) utilizing specialized connection chunking features.
