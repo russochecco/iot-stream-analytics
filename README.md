@@ -1,8 +1,10 @@
 # Real-Time IoT Stream Analytics Pipeline
-An example of a production-grade, event-driven streaming data pipeline for processing temperature telemetry data, built with PySpark Structured Streaming, Apache Kafka, Apache Iceberg, and InfluxDB. The data flow ingests raw device telemetry, validates payloads against strict schema rules, routes invalid data to a Dead Letter Queue (DLQ), triggers real-time anomaly alerts, and sinks analytical data into both a time-series database and an open lakehouse table, providing analytical capabilities for both online and offline queries.
+
+A production-grade, event-driven streaming data pipeline for processing temperature telemetry data, built with **PySpark 4.1.3 (Scala 2.13)**, Apache Kafka, Apache Iceberg, and InfluxDB. The data flow ingests raw device telemetry, validates payloads against strict schema contracts, routes invalid records to a Dead Letter Queue (DLQ), triggers real-time anomaly alerts, and sinks analytical data into both a time-series database and an open lakehouse table.
 
 ## Architecture Overview
-The system uses a decoupled, event-driven streaming architecture. To ensure fault tolerance, isolation, and scalability, the data flow is divided into two specialized **PySpark Structured Streaming** applications that communicate through **Apache Kafka** topics:
+
+The system utilizes a decoupled, event-driven streaming architecture. To ensure fault tolerance, isolation, and horizontal scalability, the data flow is split into two independent PySpark Structured Streaming applications communicating via Apache Kafka brokers:
 
 <div align="center">
   <img src="images/blueprint.png" alt="High-Level Blueprint" width="80%">
@@ -11,114 +13,145 @@ The system uses a decoupled, event-driven streaming architecture. To ensure faul
 ### Component Breakdown
 
 #### 1. Data Ingestion & Source
-- **Edge Sensors**: Hardware modules deployed indoors and outdoors stream JSON payloads containing a unique `device_id`, `sensor_id`, `event_timestamp`, `temperature`, and `power` consumption.
-- **Raw Topic** (`iot.samples.raw`): Actively ingests the raw, unvalidated JSON streams directly from the edge devices.
+- **Edge Sensors**: Hardware modules stream JSON payloads containing unique device identifiers, operational metrics, and generation timestamps.
+- **Raw Ingestion Topic** (`iot.samples.raw`): High-throughput Kafka topic that ingests raw telemetry streams directly from edge device generators.
 
-#### 2. Application 1: Router
-- **Parsing & Cleansing**: Ingests data from the Kafka topic `iot.samples.raw`, parses the JSON against a strict schema contract, and checks for corrupted data or physically impossible anomalies (such as negative power draw).
-- **Dynamic Routing**:
-	- **Valid Data**: Sent to `iot.samples.refined` for downstream operational processing.
-	- **Invalid Data/Dead Letter Queue (DLQ)**: Sent to `iot.samples.dlq` so structurally failing payloads can be isolated and debugged without crashing the main application.
-- **Cold Storage Lakehouse**: Simultaneously appends an audit trail of every raw metadata event footprint into the daily partitioned Apache Iceberg table `iot_stream_analytics.events` for offline historical queries.
+#### 2. Application 1: Router (`router.py`)
+- **Parsing & Cleansing**: Consumes raw streams, parses payloads against a rigid `StructType` contract, and intercepts corrupted text or physically impossible anomalies.
+- **Dynamic Conditional Routing**:
+  - **Valid Data**: Dispatched to `iot.samples.refined` for downstream operational processing.
+  - **Invalid Data (Dead Letter Queue)**: Isolated inside `iot.samples.dlq` so failing payloads can be scrubbed and debugged without crashing cluster lines.
+- **Cold Storage Lakehouse**: Simultaneously appends an immutable, daily partitioned audit trail of every data row directly into an Apache Iceberg table format (`iceberg_catalog.bronze.iot_stream_analytics.events`).
 
-#### 3. Application 2: Processor
-- **Consumption**: Subscribes strictly to the validated data stream coming from `iot.samples.refined`.
-- **Metrics & Monitoring**: Computes operational health metrics (like network lag and pipeline latency).
-- **SLA & Real-Time Alerting**: Evaluates data against safety thresholds inline (e.g., checks if `temperature` > 85.0°C or `power` > 1500W). If an anomaly occurs, it instantly publishes a notification to `iot.alerts.anomaly`.
-- **Hot Storage Sink**: Distributes and streams micro-batches in parallel across worker nodes into the InfluxDB bucket `iot-stream-analytics` for real-time visualization dashboards.
+#### 3. Application 2: Processor (`processor.py`)
+- **Refined Ingestion**: Subscribes to the structurally validated stream on `iot.samples.refined`.
+- **Metrics Computation**: Tracks operational telemetry metrics, including network lag and ingestion pipeline latency.
+- **Real-Time Alerting**: Evaluates values against strict SLA boundaries (`temperature` > 85.0°C or `power` > 1500W). Breaks immediately publish an alert payload to `iot.alerts.anomaly`.
+- **Hot Storage Sink**: Streams micro-batches in parallel across distributed cluster execution slots directly into an InfluxDB timeseries bucket database for dashboard visualization.
 
-## Physical Deployment & Data Context
-The pipeline processes telemetry from a specialized network of multi-sensor hardware modules deployed **inside and outside target rooms**. Each physical asset is tracked via unique `device_id` and `sensor_id` mappings, streaming three core dimensions:
-- **Temperature** (`temperature`): Captures the localized ambient/room temperature where the specific sensor ID is physically installed (supporting both indoor climates and sub-zero outdoor environments).
-- **Power Consumption** (`power`): Monitors the real-time electrical draw of the localized equipment.
-- **Temporal Markers** (`event_timestamp`): Provides the exact event-generation time directly from the edge.
+## Technical Stack & Dependencies
 
-
-## Tech Stack & Patterns
-- **Stream Processing**: PySpark Structured Streaming (`foreachBatch` mechanics).
-- **Message Broker**: Apache Kafka (multi-topic orchestration, DLQ pattern, alerting).
-- **Storage & Lakehouse**: Apache Iceberg (ACID transactions, daily partitioning).
-- **Time Series DB**: InfluxDB v2 (thread-safe worker partition chunking via `influxdb-client`).
-- **Resiliency & Observability**: Memory and disk micro-batch persistence (`StorageLevel.MEMORY_AND_DISK`), checkpointing recovery systems, and descriptive application logging.
-
+- **Data Processing Framework**: Apache Spark (PySpark 4.1.3 Core Client)
+- **Language & Runtime**: Python 3.12+ / Java OpenJDK 17
+- **Compiler Architecture Target**: Scala 2.13 Suffix Mapping
+- **Message Broker Suite**: Apache Kafka (Distributed Multi-Topic Orchestration)
+- **Open Lakehouse Format**: Apache Iceberg (ACID Transactions, Hadoop Type Catalog)
+- **Timeseries Storage**: InfluxDB v2 (Thread-safe synchronous worker partition chunking)
 
 ## Repository Structure
 
-The project follows a modular, production-ready Poetry workspace layout:
+The repository follows a clean, production-ready python package structure managed via Poetry:
 
 ```text
 .
 ├── README.md
+├── dist/                                            # Formulated wheel and tar package distribution build outputs
 ├── images/
 │   └── blueprint.png                                # End-to-end multi-app pipeline architecture diagram
-├── poetry.lock                                      # Pinlocked dependency tree ledger
-├── pyproject.toml                                   # Poetry build system, package definitions, and configs
+├── poetry.lock                                      # Pinlocked project dependency ledger
+├── pyproject.toml                                   # PEP 621 metadata, tool definitions, and package path routing
 ├── src/
-│   └── iot_stream_analytics/                        # Core production streaming application logic
+│   └── iot_stream_analytics/                        # Core production streaming application logic package
 │       ├── __init__.py
-│       ├── processor.py                             # App 2: Real-time anomaly alerts & InfluxDB metric sinks
-│       └── router.py                                # App 1: Kafka ingestion schema validation, routing, & Iceberg DLQ
-└── tests/
-    └── iot_stream_analytics/                        # End-to-end integration test framework
-        ├── __init__.py
-        └── test_iot_stream_analytics_e2e.py        # Mock telemetry generation engine & pipeline test suite
+│       ├── processor.py                             # Application 2: Metric calculations and InfluxDB sinks
+│       └── router.py                                # Application 1: Schema validation, Kafka routing, & Iceberg appends
+├── tests/                                           # Non-redundant in-memory unit testing suite
+│   ├── conftest.py                                  # Shared, session-scoped local SparkSession fixture
+│   └── test_pipeline_logic.py                       # Sandboxed test cases for parsing, validation, & alerts
+└── utils/                                           # Shared framework components and external execution helper utilities
+    ├── generator.py                                 # Continuous, warning-free mock telemetry stream generation engine
+    └── spark_helpers.py                             # Centralized, non-redundant logging and SparkSession builders
 ```
-
 
 ## Getting Started
 
-### Prerequisites
-- Python 3.10+
-- Apache Spark 3.5+ (configured with Kafka & Iceberg runtime JARs to match the deploy targets)
-- Running instances of Apache Kafka, InfluxDB v2, MinIO, and your target Catalog (e.g., Hive/REST) for Apache Iceberg.
+### 1. Environment Prerequisite Setup
+Ensure you have Python 3.12, Java JDK 17, and your standalone cluster environment running. Install dependencies using Poetry:
 
-### Environment Configuration
-The scripts rely entirely on decoupled environment properties. Create a `.env` file or export the following properties before launching:
+```bash
+# Sync local virtual environment dependencies
+poetry install
+```
 
-<pre><code># Spark Settings
-export SPARK_CHECKPOINT_LOCATION="/path/to/spark/checkpoints"
+### 2. Environment Variables Matrix
+The pipeline code abstracts configurations to environment parameters. Export the following variables or declare them inside a localized `.env` configuration prior to submission:
 
-# Kafka Settings
+```bash
+export VENV_PYTHON=$(which python)
+export KAFKA_SAMPLES_DLQ_TOPIC="iot.samples.dlq"
 export KAFKA_SAMPLES_RAW_TOPIC="iot.samples.raw"
 export KAFKA_SAMPLES_REFINED_TOPIC="iot.samples.refined"
-export KAFKA_SAMPLES_DLQ_TOPIC="iot.samples.dlq"
 export KAFKA_ALERTS_ANOMALY_TOPIC="iot.alerts.anomaly"
-export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
+export KAFKA_BOOTSTRAP_SERVERS="..."
 export KAFKA_STARTING_OFFSETS="latest"
-
-# InfluxDB Settings
-export INFLUX_URL="http://localhost:18086"
-export INFLUX_TOKEN="your-super-secret-auth-token"
-export INFLUX_ORG="your-organization"
+export SPARK_CHECKPOINT_LOCATION="..."
+export ICEBERG_CATALOG_NAMESPACE="iceberg_catalog.bronze.iot_stream_analytics"
+export INFLUX_URL="..."
+export INFLUX_TOKEN="..."
+export INFLUX_ORG="..."
 export INFLUX_BUCKET="iot-stream-analytics"
+```
 
-# Apache Iceberg Settings
-export ICEBERG_CATALOG_NAMESPACE="iceberg_catalog.bronze.iot_stream_analytics"</code></pre>
+## Running the Pipeline via Spark-Submit
 
-## Running the Pipeline
+Due to the strict PySpark 4.1.3 / Scala 2.13 runtime requirements, jobs must be routed using matching dependency packages. Submissions are forced into `--deploy-mode client` because Spark Standalone cluster managers do not support cluster mode for native Python drivers.
 
-To run the pipeline components locally or on your cluster, follow these steps sequentially.
+### 1. Launch the Message Router Pipeline (Application 1)
+This step handles core validation, dead letter logging, and mounts files onto your MinIO/S3 object store. It includes explicit Hadoop S3A timeout property overrides to prevent fatal `java.lang.NumberFormatException` crashes on strings like `"60s"` or `"24h"`, and enforces `SimpleAWSCredentialsProvider` to isolate AWS SDK v1/v2 mismatches:
 
-1. **Start the Input Router & Validation Pipeline (Application 1):**
-<pre><code>poetry run spark-submit \
-  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2 \
+```bash
+spark-submit \
+  --master spark://127.0.0.1:7077 \
+  --deploy-mode client \
+  --num-executors 2 \
+  --total-executor-cores 2 \
+  --executor-memory 2g \
+  --class org.apache.spark.deploy.PythonRunner \
+  --packages "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.3,org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.12.0,org.apache.iceberg:iceberg-aws-bundle:1.12.0,org.apache.hadoop:hadoop-aws:3.3.4" \
   --conf spark.sql.extensions="org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
   --conf spark.sql.catalog.iceberg_catalog="org.apache.iceberg.spark.SparkCatalog" \
   --conf spark.sql.catalog.iceberg_catalog.type="hadoop" \
-  --conf spark.sql.catalog.iceberg_catalog.warehouse="your-S3-warehouse-location" \
+  --conf spark.sql.catalog.iceberg_catalog.warehouse="s3a://iceberg-warehouse/iceberg_catalog" \
   --conf spark.sql.catalog.iceberg_catalog.s3.path-style-access="true" \
-  --conf spark.hadoop.fs.s3a.access.key="your-minio-account" \
-  --conf spark.hadoop.fs.s3a.secret.key="your-minio-password" \
-  --conf spark.hadoop.fs.s3a.endpoint="your-S3-endpoint" \
+  --conf spark.hadoop.fs.s3a.access.key="..." \
+  --conf spark.hadoop.fs.s3a.secret.key="..." \
+  --conf spark.hadoop.fs.s3a.endpoint="..." \
   --conf spark.hadoop.fs.s3a.path.style.access="true" \
   --conf spark.hadoop.fs.s3a.connection.ssl.enabled="false" \
   --conf spark.hadoop.fs.s3a.impl="org.apache.hadoop.fs.s3a.S3AFileSystem" \
-  src/iot_stream_analytics/router.py</code></pre>
+  --conf spark.hadoop.fs.s3a.aws.credentials.provider="org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider" \
+  --conf spark.hadoop.fs.s3a.connection.timeout=60000 \
+  --conf spark.hadoop.fs.s3a.connection.establish.timeout=60000 \
+  --conf spark.hadoop.fs.s3a.threads.keepalivetime=60 \
+  --conf spark.hadoop.fs.s3a.connection.ttl=86400000 \
+  --conf spark.hadoop.fs.s3a.multipart.purge.age=86400 \
+  --conf spark.streaming.stopGracefullyOnShutdown="true" \
+  --conf spark.sql.shuffle.partitions=4 \
+  --conf spark.pyspark.driver.python="$VENV_PYTHON" \
+  --conf spark.pyspark.python="$VENV_PYTHON" \
+  --conf spark.executorEnv.PYSPARK_PYTHON="$VENV_PYTHON" \
+  src/iot_stream_analytics/router.py
+```
 
-2. **Start the Analytics & InfluxDB Processor Pipeline (Application 2):**
-<pre><code>poetry run spark-submit \
-  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4 \
-  src/iot_stream_analytics/processor.py</code></pre>
+### 2. Launch the Analytics Telemetry Processor (Application 2)
+This script processes the cleansed stream, aggregates metrics, monitors latency intervals, and feeds InfluxDB. It tunes partition shuffle layers to `4` to prevent task scheduling overhead on your 2-core standalone layout:
+
+```bash
+spark-submit \
+  --master spark://127.0.0.1:7077 \
+  --deploy-mode client \
+  --num-executors 2 \
+  --total-executor-cores 2 \
+  --executor-memory 2g \
+  --class org.apache.spark.deploy.PythonRunner \
+  --packages "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.3" \
+  --conf spark.sql.shuffle.partitions=4 \
+  --conf spark.streaming.stopGracefullyOnShutdown="true" \
+  --conf spark.pyspark.driver.python="$VENV_PYTHON" \
+  --conf spark.pyspark.python="$VENV_PYTHON" \
+  --conf spark.executorEnv.PYSPARK_PYTHON="$VENV_PYTHON" \
+  src/iot_stream_analytics/processor.py
+```
 
 ## Data Contracts
 
@@ -133,6 +166,7 @@ Inbound events must match the following JSON contract layout:
   "temperature": 23.4,
   "power": 1200.5
 }
+
 ```
 
 ## Validation & Routing Rules
@@ -141,14 +175,38 @@ Inbound events must match the following JSON contract layout:
 
 *Note: Sub-zero temperature readings are treated as valid data to support outdoor environmental sensors. Furthermore, payloads containing critical threshold breaches (e.g., temperature > 85.0°C or power > 1500W) are explicitly handled as structurally valid and passed downstream so they can successfully trigger real-time alerts in the Processor application.*
 
-## Optimization & Resilience Engineering
+## Core Optimization & Resilience Patterns
+
+- **Partition Shuffle Tuning**: Global default shuffle partitions are optimized from `200` down to `4` (a balanced 2× multiple of the standalone cluster's 2-core execution capacity). This prevents data fragmentation and avoids hundreds of slow scheduling waves.
+- **Lineage Caching & Persistence**: Leverages `.persist(StorageLevel.MEMORY_AND_DISK)` on multi-branch evaluation tracks, ensuring that raw JSON string decodes and latency calculations are calculated exactly once in memory.
+- **Backpressure Constraints**: Implements strict traffic limits (`maxOffsetsPerTrigger=20000`) to guarantee cluster data ingestion remains fully stable during upstream broker volume spikes.
+- **Graceful Shutdown**: Enforces `stopGracefullyOnShutdown=true` parameters to guarantee zero message drop-offs or uncommitted offset boundaries when dropping streaming threads during cluster maintenance.
 - **Distributed InfluxDB Writes**: Instead of collecting data to the driver, writes are executed in parallel across Spark worker partitions (`rdd.foreachPartition`) utilizing specialized connection chunking features.
-- **Backpressure Management**: Explicitly bounds stream sizing limits via `maxOffsetsPerTrigger=20000` settings to avoid out-of-memory (OOM) errors during traffic spikes.
-- **Caching & Lineage Isolation**: Implements micro-batch data caching via `.persist(StorageLevel.MEMORY_AND_DISK)` to avoid evaluating expensive stream transformations multiple times during multi-branch writes.
 
-## Pipeline Testing via Mock Data Generation
-The script `test_iot_stream_analytics_e2e.py`, located in the `tests/iot_stream_analytics` Python package, contains a mock data generator designed to test the pipeline with simulated samples.
+## Real-Time Data Streaming & Simulation
 
-To execute this end-to-end test script, run the following command:
+### Continuous Stream Data Seeding (utils/generator.py)
 
-<pre><code>poetry run pytest tests/iot_stream_analytics/test_iot_stream_analytics_e2e.py</code></pre>
+To monitor the entire end-to-end streaming data flow visually, you can execute the plain Python stream generator utility. It feeds realistic, continuous multi-scenario streams into your broker setup and shows the outputs in the terminal:
+
+```bash
+poetry run python utils/generator.py
+```
+
+This generator continuously publishes four data patterns to allow you to test your pipeline branches in real time:
+1. **Standard Operations**: Clean telemetry rows that flow directly down to the Hot and Cold storage sinks.
+2. **Payload Corruption**: Intentionally broken JSON structures to verify the Router's syntax isolation path.
+3. **Invalid Metrics**: Out-of-bounds metrics (e.g., sub-zero equipment parameters) to verify the Router's validation checks.
+4. **Metric Surges**: High temperature or wattage levels to verify the Processor's anomaly detection alarms.
+
+### Automated In-Memory Testing Suite
+
+The repository includes a decoupled pytest framework structured to evaluate your Functional Core data transformations and path splitting rules completely in-memory, avoiding any live network data leaks or external cluster dependencies:
+
+```bash
+# Clear out out-of-date testing cache targets
+rm -rf .pytest_cache/
+
+# Execute the unit testing suite context
+poetry run python -m pytest tests/ -v
+```

@@ -1,8 +1,35 @@
-.idea
-.venv
-.submit*
-poetry.lock
+.spark-staging/
+derby.log
+metastore_db/
+spark-warehouse/
+*.dump
+eventLogs/
+
+# Local Model Storage
+models/**/*
+!models/.gitkeep
+
+# Python Core & Cache compiled bytecode
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# IDEs, Editors & System Garbage
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
-images/.DS_Store
-src/.DS_Store
+**/.DS_Store
+poetry.lock
+dist
+
+# Spark submit tracking logs
+.submit*

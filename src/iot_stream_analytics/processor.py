@@ -1,50 +1,44 @@
 import os
 import sys
-import datetime
 import logging
 import pyspark.sql.functions as F
 from functools import partial
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StringType, StructField, FloatType, TimestampType
+from pyspark.sql import SparkSession, DataFrame
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+from utils.spark_helpers import setup_logging, get_spark_session, SAMPLE_SCHEMA
 
-KAFKA_ALERTS_ANOMALY_TOPIC = os.environ["KAFKA_ALERTS_ANOMALY_TOPIC"]
-KAFKA_SAMPLES_REFINED_TOPIC = os.environ["KAFKA_SAMPLES_REFINED_TOPIC"]
-KAFKA_BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
-KAFKA_STARTING_OFFSETS = os.environ["KAFKA_STARTING_OFFSETS"]
-SPARK_CHECKPOINT_LOCATION = os.environ["SPARK_CHECKPOINT_LOCATION"]
-INFLUX_URL = os.environ["INFLUX_URL"]
-INFLUX_TOKEN = os.environ["INFLUX_TOKEN"]
-INFLUX_ORG = os.environ["INFLUX_ORG"]
-INFLUX_BUCKET = os.environ["INFLUX_BUCKET"]
-APP_NAME = "Processor"
-MAX_CHUNK_SIZE = 500
+APP_NAME = "IoTStreamProcessor"
 
-SAMPLE_SCHEMA = StructType([
-    StructField("device_id", StringType(), True),
-    StructField("sensor_id", StringType(), True),
-    StructField("event_timestamp", TimestampType(), True),
-    StructField("temperature", FloatType(), True),
-    StructField("power", FloatType(), True)
-])
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=f"%(asctime)s %(levelname)s {APP_NAME}: %(message)s",
-    datefmt="%y/%m/%d %H:%M:%S"
-)
-
-logger = logging.getLogger(APP_NAME)
+log = logging.getLogger(APP_NAME)
 
 
-def write_influx_points(partition_it, url, token, org, bucket):
+def compute_telemetry_metrics(parsed_df: DataFrame) -> DataFrame:
+    """Flattens incoming payload structures and computes pipeline latency metrics."""
+    return (
+        parsed_df.select("sample.*", "kafka_timestamp", "ingestion_timestamp")
+        .withColumn(
+            "network_lag_sec",
+            (F.col("kafka_timestamp").cast("long") - F.col("event_timestamp").cast("long")).cast("double")
+        )
+        .withColumn(
+            "ingestion_lag_sec",
+            (F.col("ingestion_timestamp").cast("long") - F.col("kafka_timestamp").cast("long")).cast("double")
+        )
+    )
+
+
+def extract_out_of_bounds_anomalies(telemetry_df: DataFrame) -> DataFrame:
+    """Filters out-of-bounds anomaly telemetry records based on physical safety thresholds."""
+    return telemetry_df.filter((F.col("temperature") > 85.0) | (F.col("power") > 1500.0))
+
+
+def write_influx_points(partition_it, url, token, org, bucket, max_chunk_size):
+    """Write an RDD partition iterator of telemetry points to InfluxDB."""
     try:
-        # Write data points into InfluxDB
         with InfluxDBClient(url=url, token=token, org=org) as client:
             write_api = client.write_api(write_options=SYNCHRONOUS)
-
             points = []
 
             for row in partition_it:
@@ -58,24 +52,34 @@ def write_influx_points(partition_it, url, token, org, bucket):
                     .field("ingestion_lag_sec", float(row["ingestion_lag_sec"]))
                     .time(row["event_timestamp"])
                 )
-
                 points.append(point)
 
-                if len(points) >= MAX_CHUNK_SIZE:
+                if len(points) >= max_chunk_size:
                     write_api.write(bucket=bucket, org=org, record=points, write_precision=WritePrecision.NS)
-
                     points = []
+
             if points:
                 write_api.write(bucket=bucket, org=org, record=points, write_precision=WritePrecision.NS)
+
     except Exception as e:
-        print(f"Worker failed due to: {e}")
+        worker_log = logging.getLogger(f"{APP_NAME}.Worker")
+        worker_log.error(f"Worker failed due to: {e}", exc_info=True)
         raise e
 
 
-def process_batch(batch_df, batch_id):
-    logger.info(f"Micro-batch {batch_id} started")
+def process_batch(batch_df: DataFrame, batch_id: int, config: dict):
+    """Process, transform, and route a streaming micro-batch."""
+    log.info(f"Micro-batch {batch_id} started")
 
-    # Parse batch
+    kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+    kafka_alerts_anomaly_topic = config["KAFKA_ALERTS_ANOMALY_TOPIC"]
+    influx_url = config["INFLUX_URL"]
+    influx_token = config["INFLUX_TOKEN"]
+    influx_org = config["INFLUX_ORG"]
+    influx_bucket = config["INFLUX_BUCKET"]
+    max_chunk_size = config["MAX_CHUNK_SIZE"]
+
+    # 1. Parse and extract JSON byte values from Kafka
     samples_df = (
         batch_df.select(
             F.from_json(F.col("value").cast("string"), SAMPLE_SCHEMA).alias("sample"),
@@ -84,100 +88,107 @@ def process_batch(batch_df, batch_id):
         )
     )
 
-    # Telemetry with additional metrics
-    telemetry_df = (
-        samples_df.select("sample.*", "kafka_timestamp", "ingestion_timestamp")
-        .withColumn(
-            "network_lag_sec",
-            (
-                    F.col("kafka_timestamp").cast("long") - F.col("event_timestamp").cast("long")
-            )
-            .cast("double")
-        )
-        .withColumn(
-            "ingestion_lag_sec",
-            (
-                    F.col("ingestion_timestamp").cast("long") - F.col("kafka_timestamp").cast("long")
-            )
-            .cast("double")
-        )
-        .persist(StorageLevel.MEMORY_AND_DISK)
-    )
+    # 2. Call Functional Core to compute lag metrics
+    telemetry_df = compute_telemetry_metrics(samples_df).persist(StorageLevel.MEMORY_AND_DISK)
 
     try:
-        # Detect anomalies and publish alerts to Kafka
-        alerts_df = telemetry_df.filter((F.col("temperature") > 85.0) | (F.col("power") > 1500.0))
+        # 3. Call Functional Core to identify threshold breaches
+        alerts_df = extract_out_of_bounds_anomalies(telemetry_df)
 
-        if not alerts_df.isEmpty():
-            logger.info(f"Detected anomalies in the micro-batch {batch_id}, sending alerts to Kafka")
-
+        if alerts_df.take(1):
+            log.info(f"Detected anomalies in micro-batch {batch_id}, routing alerts to Kafka")
             (
                 alerts_df
                 .withColumn("value", F.to_json(F.struct(
-                    "device_id",
-                    "sensor_id",
-                    "event_timestamp",
-                    "temperature",
-                    "power"
+                    "device_id", "sensor_id", "event_timestamp", "temperature", "power"
                 )))
                 .select(F.col("device_id").alias("key"), "value")
                 .write
                 .format("kafka")
-                .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-                .option("topic", KAFKA_ALERTS_ANOMALY_TOPIC)
+                .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+                .option("topic", kafka_alerts_anomaly_topic)
                 .save()
             )
-
         else:
-            logger.info(f"No anomalies detected in the micro-batch {batch_id}")
+            log.info(f"No anomalies detected in micro-batch {batch_id}")
 
-        # Write telemetry data to InfluxDB
+        # 4. Freeze InfluxDB parameters via partial function mapping
         influx_worker_func = partial(
             write_influx_points,
-            url=INFLUX_URL,
-            token=INFLUX_TOKEN,
-            org=INFLUX_ORG,
-            bucket=INFLUX_BUCKET
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            max_chunk_size=max_chunk_size
         )
 
+        # 5. Push data rows horizontally to InfluxDB across cluster executors
         telemetry_df.rdd.foreachPartition(influx_worker_func)
-
-        logger.info(f"Micro-batch {batch_id} completed succesfully")
+        log.info(f"Micro-batch {batch_id} completed successfully")
 
     except Exception as e:
-        logger.error(f"Micro-batch {batch_id} failed due to {e}", exc_info=True)
+        log.error(f"Micro-batch {batch_id} failed due to {e}", exc_info=True)
         raise e
     finally:
         telemetry_df.unpersist()
 
 
-if __name__ == "__main__":
-    spark = (
-        SparkSession.builder
-        .appName(APP_NAME)
-        .getOrCreate()
-    )
+def run_pipeline(spark: SparkSession, config: dict):
+    """Build and execute the continuous streaming directed acyclic graph (DAG)."""
+    try:
+        kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+        starting_offsets = config["KAFKA_STARTING_OFFSETS"]
+        kafka_samples_refined_topic = config["KAFKA_SAMPLES_REFINED_TOPIC"]
+        spark_checkpoint_location = config["SPARK_CHECKPOINT_LOCATION"]
 
-    # Load data stream
-    df = (
-        spark
-        .readStream
-        .format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-        .option("startingOffsets", KAFKA_STARTING_OFFSETS)
-        .option("subscribe", KAFKA_SAMPLES_REFINED_TOPIC)
-        .load()
-    )
-
-    query = (
-        df.writeStream
-        .foreachBatch(process_batch)
-        .option(
-            "checkpointLocation",
-            f"{SPARK_CHECKPOINT_LOCATION}/samples-processor"
+        df = (
+            spark
+            .readStream
+            .format("kafka")
+            .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+            .option("startingOffsets", starting_offsets)
+            .option("subscribe", kafka_samples_refined_topic)
+            .load()
         )
-        .option("maxOffsetsPerTrigger", 20000)
-        .start()
-    )
 
-    query.awaitTermination()
+        process_batch_func = partial(process_batch, config=config)
+
+        query = (
+            df.writeStream
+            .foreachBatch(process_batch_func)
+            .option("checkpointLocation", f"{spark_checkpoint_location}/samples-processor")
+            .option("maxOffsetsPerTrigger", 20000)
+            .start()
+        )
+
+        query.awaitTermination()
+    except Exception as e:
+        log.error(f"Streaming pipeline execution halted due to exception: {str(e)}")
+        raise e
+
+
+if __name__ == "__main__":
+    setup_logging(APP_NAME)
+
+    config = {
+        "KAFKA_ALERTS_ANOMALY_TOPIC": os.environ["KAFKA_ALERTS_ANOMALY_TOPIC"],
+        "KAFKA_SAMPLES_REFINED_TOPIC": os.environ["KAFKA_SAMPLES_REFINED_TOPIC"],
+        "KAFKA_BOOTSTRAP_SERVERS": os.environ["KAFKA_BOOTSTRAP_SERVERS"],
+        "KAFKA_STARTING_OFFSETS": os.environ["KAFKA_STARTING_OFFSETS"],
+        "SPARK_CHECKPOINT_LOCATION": os.environ["SPARK_CHECKPOINT_LOCATION"],
+        "INFLUX_URL": os.environ["INFLUX_URL"],
+        "INFLUX_TOKEN": os.environ["INFLUX_TOKEN"],
+        "INFLUX_ORG": os.environ["INFLUX_ORG"],
+        "INFLUX_BUCKET": os.environ["INFLUX_BUCKET"],
+        "MAX_CHUNK_SIZE": 500
+    }
+
+    session = get_spark_session(APP_NAME)
+
+    try:
+        run_pipeline(session, config)
+    except Exception:
+        session.stop()
+        sys.exit(1)
+    finally:
+        session.stop()

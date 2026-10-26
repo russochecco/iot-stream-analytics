@@ -1,41 +1,66 @@
 import os
+import sys
 import logging
 import pyspark.sql.functions as F
+from functools import partial
 from pyspark.storagelevel import StorageLevel
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StringType, StructField, FloatType, TimestampType
+from pyspark.sql import SparkSession, DataFrame
+from utils.spark_helpers import setup_logging, get_spark_session, SAMPLE_SCHEMA
 
-KAFKA_SAMPLES_DLQ_TOPIC = os.environ["KAFKA_SAMPLES_DLQ_TOPIC"]
-KAFKA_SAMPLES_RAW_TOPIC = os.environ["KAFKA_SAMPLES_RAW_TOPIC"]
-KAFKA_SAMPLES_REFINED_TOPIC = os.environ["KAFKA_SAMPLES_REFINED_TOPIC"]
-KAFKA_BOOTSTRAP_SERVERS = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
-KAFKA_STARTING_OFFSETS = os.environ["KAFKA_STARTING_OFFSETS"]
-SPARK_CHECKPOINT_LOCATION = os.environ["SPARK_CHECKPOINT_LOCATION"]
-ICEBERG_CATALOG_NAMESPACE = os.environ["ICEBERG_CATALOG_NAMESPACE"]
-ICEBERG_EVENTS_TABLE = f"{ICEBERG_CATALOG_NAMESPACE}.events"
 APP_NAME = "Router"
 
-SAMPLE_SCHEMA = StructType([
-    StructField("device_id", StringType(), True),
-    StructField("sensor_id", StringType(), True),
-    StructField("event_timestamp", TimestampType(), True),
-    StructField("temperature", FloatType(), True),
-    StructField("power", FloatType(), True)
-])
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=f"%(asctime)s %(levelname)s {APP_NAME}: %(message)s",
-    datefmt="%y/%m/%d %H:%M:%S"
-)
-
-logger = logging.getLogger(APP_NAME)
+log = logging.getLogger(APP_NAME)
 
 
-def process_batch(batch_df, batch_id):
-    logger.info(f"Micro-batch {batch_id} started")
+def classify_and_route_events(parsed_events_df: DataFrame, dlq_topic: str, refined_topic: str) -> DataFrame:
+    """Evaluates data completeness, applies business thresholds, and classifies target output topics."""
+    classified = parsed_events_df.withColumn(
+        "target_topic",
+        F.when(F.col("sample").isNull(), F.lit(dlq_topic))
+        .when(
+            (F.col("sample.temperature").isNull()) | (F.col("sample.temperature") < 0) |
+            (F.col("sample.power").isNull()) | (F.col("sample.power") < 0),
+            F.lit(dlq_topic)
+        )
+        .otherwise(F.lit(refined_topic))
+    )
 
-    # Parse batch
+    return classified.select(
+        F.col("kafka_key").alias("key"),
+        F.when(F.col("target_topic") == dlq_topic, F.col("kafka_value"))
+        .otherwise(F.to_json("sample"))
+        .alias("value"),
+        F.col("target_topic").alias("topic")
+    )
+
+
+def initialize_iceberg_storage(spark: SparkSession, events_table_path: str):
+    """Ensure destination structural database tables exist inside the catalog architecture."""
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {events_table_path} (
+            kafka_key STRING,
+            kafka_value STRING,
+            topic STRING,
+            partition INTEGER,
+            offset INTEGER,
+            kafka_timestamp TIMESTAMP,
+            ingestion_timestamp TIMESTAMP
+        )
+        USING iceberg
+        PARTITIONED BY (days(ingestion_timestamp))
+        """)
+
+
+def process_batch(batch_df: DataFrame, batch_id: int, config: dict):
+    """Classify, validate, split, and route a streaming ingestion micro-batch."""
+    log.info(f"Micro-batch {batch_id} started")
+
+    kafka_samples_dlq_topic = config["KAFKA_SAMPLES_DLQ_TOPIC"]
+    kafka_samples_refined_topic = config["KAFKA_SAMPLES_REFINED_TOPIC"]
+    kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+    iceberg_events_table = config["ICEBERG_EVENTS_TABLE"]
+
+    # 1. Parse operational metadata records into a common staging DataFrame
     events_df = (
         batch_df.select(
             F.col("key").cast("string").alias("kafka_key"),
@@ -50,98 +75,93 @@ def process_batch(batch_df, batch_id):
     )
 
     try:
-        # Parse samples
-        samples_df = (
-            events_df.select(
-                "kafka_key",
-                "kafka_value",
-                F.from_json(F.col("kafka_value"), SAMPLE_SCHEMA).alias("sample")
-            ))
+        # 2. Extract nested structural metrics from raw string bodies
+        samples_df = events_df.withColumn("sample", F.from_json(F.col("kafka_value"), SAMPLE_SCHEMA))
 
-        # Validate content
-        classified_df = samples_df.withColumn(
-            "target_topic",
-            F.when(F.col("sample").isNull(), F.lit(KAFKA_SAMPLES_DLQ_TOPIC))
-            .when(
-                (F.col("sample.temperature").isNull()) | (F.col("sample.temperature") < 0) |
-                (F.col("sample.power").isNull()) | (F.col("sample.power") < 0),
-                F.lit(KAFKA_SAMPLES_DLQ_TOPIC)
-            )
-            .otherwise(F.lit(KAFKA_SAMPLES_REFINED_TOPIC))
+        # 3. Call Functional Core to apply validation and topic classification rules
+        kafka_df = classify_and_route_events(
+            parsed_events_df=samples_df,
+            dlq_topic=kafka_samples_dlq_topic,
+            refined_topic=kafka_samples_refined_topic
         )
 
-        # Hold original value in case validation fails and publish samples to Kafka
-        kafka_df = classified_df.select(
-            F.col("kafka_key").alias("key"),
-            F.when(F.col("target_topic") == KAFKA_SAMPLES_DLQ_TOPIC, F.col("kafka_value"))
-            .otherwise(F.to_json("sample"))
-            .alias("value"),
-            F.col("target_topic").alias("topic")
-        )
-
-        if not kafka_df.isEmpty():
+        # 4. Stream data downstream safely if items are ready to route
+        if kafka_df.take(1):
             (
                 kafka_df.write
                 .format("kafka")
-                .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
+                .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
                 .save()
             )
 
-        # Write events to Iceberg table
-        events_df.writeTo(ICEBERG_EVENTS_TABLE).append()
+        # 5. Append structural audit trails directly into Apache Iceberg table targets
+        events_df.writeTo(iceberg_events_table).append()
 
-        logger.info(f"Micro-batch {batch_id} completed succesfully")
+        log.info(f"Micro-batch {batch_id} completed successfully")
 
     except Exception as e:
-        logger.error(f"Micro-batch {batch_id} failed due to {e}", exc_info=True)
+        log.error(f"Micro-batch {batch_id} failed due to {e}", exc_info=True)
         raise e
     finally:
         events_df.unpersist()
 
 
+def run_pipeline(spark: SparkSession, config: dict):
+    """Build and start the stream splitting and message routing loop engine."""
+    try:
+        kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+        starting_offsets = config["KAFKA_STARTING_OFFSETS"]
+        kafka_samples_raw_topic = config["KAFKA_SAMPLES_RAW_TOPIC"]
+        spark_checkpoint_location = config["SPARK_CHECKPOINT_LOCATION"]
+
+        df = (
+            spark
+            .readStream
+            .format("kafka")
+            .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+            .option("startingOffsets", starting_offsets)
+            .option("subscribe", kafka_samples_raw_topic)
+            .load()
+        )
+
+        process_batch_func = partial(process_batch, config=config)
+
+        query = (
+            df.writeStream
+            .foreachBatch(process_batch_func)
+            .option("checkpointLocation", f"{spark_checkpoint_location}/samples-router")
+            .option("maxOffsetsPerTrigger", 20000)
+            .start()
+        )
+
+        query.awaitTermination()
+    except Exception as e:
+        log.error(f"Streaming router pipeline execution halted due to exception: {str(e)}")
+        raise e
+
+
 if __name__ == "__main__":
-    spark = (
-        SparkSession.builder
-        .appName(APP_NAME)
-        .getOrCreate()
-    )
+    setup_logging(APP_NAME)
 
-    spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {ICEBERG_EVENTS_TABLE} (
-            kafka_key STRING,
-            kafka_value STRING,
-            topic STRING,
-            partition INTEGER,
-            offset INTEGER,
-            kafka_timestamp TIMESTAMP,
-            ingestion_timestamp TIMESTAMP
-        )
-        USING iceberg
-        PARTITIONED BY (days(ingestion_timestamp))
-        """)
+    iceberg_catalog_namespace = os.environ["ICEBERG_CATALOG_NAMESPACE"]
+    config = {
+        "KAFKA_SAMPLES_DLQ_TOPIC": os.environ["KAFKA_SAMPLES_DLQ_TOPIC"],
+        "KAFKA_SAMPLES_RAW_TOPIC": os.environ["KAFKA_SAMPLES_RAW_TOPIC"],
+        "KAFKA_SAMPLES_REFINED_TOPIC": os.environ["KAFKA_SAMPLES_REFINED_TOPIC"],
+        "KAFKA_BOOTSTRAP_SERVERS": os.environ["KAFKA_BOOTSTRAP_SERVERS"],
+        "KAFKA_STARTING_OFFSETS": os.environ["KAFKA_STARTING_OFFSETS"],
+        "SPARK_CHECKPOINT_LOCATION": os.environ["SPARK_CHECKPOINT_LOCATION"],
+        "ICEBERG_EVENTS_TABLE": f"{iceberg_catalog_namespace}.events"
+    }
 
-    # ---------------------
-    # Load data stream
-    # ---------------------
-    df = (
-        spark
-        .readStream
-        .format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-        .option("startingOffsets", KAFKA_STARTING_OFFSETS)
-        .option("subscribe", KAFKA_SAMPLES_RAW_TOPIC)
-        .load()
-    )
+    session = get_spark_session(APP_NAME)
 
-    query = (
-        df.writeStream
-        .foreachBatch(process_batch)
-        .option(
-            "checkpointLocation",
-            f"{SPARK_CHECKPOINT_LOCATION}/samples-router"
-        )
-        .option("maxOffsetsPerTrigger", 20000)
-        .start()
-    )
+    initialize_iceberg_storage(session, config["ICEBERG_EVENTS_TABLE"])
 
-    query.awaitTermination()
+    try:
+        run_pipeline(session, config)
+    except Exception:
+        session.stop()
+        sys.exit(1)
+    finally:
+        session.stop()

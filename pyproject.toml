@@ -6,14 +6,17 @@ authors = [
     { name = "Francesco Russo", email = "russo.checco@gmail.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<4"
 dependencies = [
-    "pyspark[sql]==3.5.4",
+    "pyspark[sql]==4.1.3",
     "influxdb-client>=1.9.0"
 ]
 
 [tool.poetry]
-packages = [{ include = "iot_stream_analytics", from = "src" }]
+packages = [
+    { include = "iot_stream_analytics", from = "src" },
+    { include = "utils" }
+]
 
 [dependency-groups]
 dev = [
@@ -22,11 +25,12 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 log_cli = true
 log_cli_level = "INFO"
-markers = [
-    "e2e: marks tests as end-to-end integration tests (requires docker containers)"
+python_files = ["test_*.py"]
+pythonpath = [
+    "src",
+    "utils"
 ]
 
 [build-system]
