@@ -45,7 +45,6 @@ The repository follows a clean, production-ready python package structure manage
 ```text
 .
 ├── README.md
-├── dist/                                            # Formulated wheel and tar package distribution build outputs
 ├── images/
 │   └── blueprint.png                                # End-to-end multi-app pipeline architecture diagram
 ├── poetry.lock                                      # Pinlocked project dependency ledger
@@ -55,9 +54,12 @@ The repository follows a clean, production-ready python package structure manage
 │       ├── __init__.py
 │       ├── processor.py                             # Application 2: Metric calculations and InfluxDB sinks
 │       └── router.py                                # Application 1: Schema validation, Kafka routing, & Iceberg appends
-├── tests/                                           # Non-redundant in-memory unit testing suite
-│   ├── conftest.py                                  # Shared, session-scoped local SparkSession fixture
-│   └── test_pipeline_logic.py                       # Sandboxed test cases for parsing, validation, & alerts
+├── tests/
+│   ├── __init__.py
+│   └── iot_stream_analytics/                        # Isolated package testing namespace
+│       ├── __init__.py
+│       ├── conftest.py                              # Shared, session-scoped local SparkSession fixture
+│       └── test_pipeline_logic.py                   # Sandboxed test cases for parsing, validation, & alerts
 └── utils/                                           # Shared framework components and external execution helper utilities
     ├── generator.py                                 # Continuous, warning-free mock telemetry stream generation engine
     └── spark_helpers.py                             # Centralized, non-redundant logging and SparkSession builders
@@ -153,6 +155,7 @@ spark-submit \
   src/iot_stream_analytics/processor.py
 ```
 
+
 ## Data Contracts
 
 ### Expected Input Format (SAMPLE_SCHEMA)
@@ -166,7 +169,6 @@ Inbound events must match the following JSON contract layout:
   "temperature": 23.4,
   "power": 1200.5
 }
-
 ```
 
 ## Validation & Routing Rules
@@ -179,7 +181,7 @@ Inbound events must match the following JSON contract layout:
 
 - **Partition Shuffle Tuning**: Global default shuffle partitions are optimized from `200` down to `4` (a balanced 2× multiple of the standalone cluster's 2-core execution capacity). This prevents data fragmentation and avoids hundreds of slow scheduling waves.
 - **Lineage Caching & Persistence**: Leverages `.persist(StorageLevel.MEMORY_AND_DISK)` on multi-branch evaluation tracks, ensuring that raw JSON string decodes and latency calculations are calculated exactly once in memory.
-- **Backpressure Constraints**: Implements strict traffic limits (`maxOffsetsPerTrigger=20000`) to guarantee cluster data ingestion remains fully stable during upstream broker volume spikes.
+- **Backpressure Constraints**: Implements strict traffic limits (`maxOffsetsPerTrigger=20000`) to guarantee cluster data ingestion remain fully stable during upstream broker volume spikes.
 - **Graceful Shutdown**: Enforces `stopGracefullyOnShutdown=true` parameters to guarantee zero message drop-offs or uncommitted offset boundaries when dropping streaming threads during cluster maintenance.
 - **Distributed InfluxDB Writes**: Instead of collecting data to the driver, writes are executed in parallel across Spark worker partitions (`rdd.foreachPartition`) utilizing specialized connection chunking features.
 
