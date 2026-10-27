@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pyspark.sql import Row
 from iot_stream_analytics.processor import compute_telemetry_metrics, extract_out_of_bounds_anomalies
 from iot_stream_analytics.router import classify_and_route_events
@@ -6,9 +6,10 @@ from iot_stream_analytics.router import classify_and_route_events
 
 def test_compute_telemetry_metrics_calculates_lag(spark_session):
     """Verifies that network lag and ingestion metrics are computed correctly."""
-    event_time = datetime(2026, 10, 26, 12, 0, 0)
-    kafka_time = datetime(2026, 10, 26, 12, 0, 5)  # +5 seconds lag
-    ingest_time = datetime(2026, 10, 26, 12, 0, 8)  # +3 seconds lag
+    # Enforcing timezone awareness guarantees consistent Unix timestamp conversions
+    event_time = datetime(2026, 10, 26, 12, 0, 0, tzinfo=timezone.utc)
+    kafka_time = datetime(2026, 10, 26, 12, 0, 5, tzinfo=timezone.utc)
+    ingest_time = datetime(2026, 10, 26, 12, 0, 8, tzinfo=timezone.utc)
 
     mock_row = Row(
         sample=Row(device_id="D1", sensor_id="S1", event_timestamp=event_time, temperature=20.0, power=100.0),

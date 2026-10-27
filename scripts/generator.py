@@ -1,26 +1,34 @@
+import os
+import sys
 import time
 import json
 import random
 import logging
-import os
 from datetime import datetime, timezone
 from kafka import KafkaProducer
 
-KAFKA_SAMPLES_RAW_TOPIC = "iot.samples.raw"
-KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 APP_NAME = "IoTSamplesGenerator"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=f"%(asctime)s %(levelname)s {APP_NAME}: %(message)s",
-    datefmt="%y/%m/%d %H:%M:%S"
-)
-
 log = logging.getLogger(APP_NAME)
+
+
+def setup_logging():
+    """Configures systemic pipeline logging diagnostics."""
+    if not log.hasHandlers():
+        console_handler = logging.StreamHandler(sys.stdout)
+        formatter = logging.Formatter(
+            fmt='%(asctime)s %(levelname)s %(name)s: %(message)s',
+            datefmt="%y/%m/%d %H:%M:%S"
+        )
+        console_handler.setFormatter(formatter)
+        log.addHandler(console_handler)
+    log.setLevel(logging.INFO)
 
 
 def json_serializer(data):
     """Encodes value dictionaries into standard utf-8 JSON bytes."""
+    # If raw bytes are passed (e.g. for corrupt payloads), return them directly
+    if isinstance(data, bytes):
+        return data
     return json.dumps(data).encode("utf-8")
 
 
@@ -31,16 +39,18 @@ def string_serializer(key):
     return str(key).encode("utf-8")
 
 
-def generate_stream():
+def generate_stream(config: dict):
     """Generates a continuous, realistic live data stream containing edge-case scenarios."""
+    kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+    kafka_samples_raw_topic = config["KAFKA_SAMPLES_RAW_TOPIC"]
+
     producer = None
 
     # Block and wait for Kafka broker availability
     while not producer:
         try:
-            # Using stable function references with active warnings filters active
             producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                bootstrap_servers=kafka_bootstrap_servers,
                 value_serializer=json_serializer,
                 key_serializer=string_serializer
             )
@@ -48,7 +58,7 @@ def generate_stream():
             log.warning("Kafka broker not available yet. Retrying in 3 seconds...")
             time.sleep(3)
 
-    log.info(f"Connected to Kafka. Starting mock samples generation onto topic: '{KAFKA_SAMPLES_RAW_TOPIC}'...")
+    log.info(f"Connected to Kafka. Starting mock samples generation onto topic: '{kafka_samples_raw_topic}'...")
 
     devices = [
         {"device_id": "DEV-A100", "sensor_id": "S-TH01", "temperature": 22.0, "power": 450.0},
@@ -66,12 +76,14 @@ def generate_stream():
 
             # Scenario A: Corrupt payload (Forces a routing rule failure to Dead Letter Queue)
             if counter % 25 == 0:
-                log.info("Simulating payload corruption (DLQ Bound)...")
-                producer.send(
-                    KAFKA_SAMPLES_RAW_TOPIC,
-                    key=device["device_id"],
-                    value="{\"device_id\": \"" + device["device_id"] + "\", \"corrupt_json: true"
-                )
+                log.info(f"Simulating payload corruption (DLQ Bound) - Sample {counter}...")
+
+                # FIX: We pass raw broken bytes. The updated json_serializer passes it through unchanged,
+                # ensuring an un-parseable JSON structure hits Kafka to trigger a real parser exception.
+                corrupt_payload = b"{\"device_id\": \"" + device["device_id"].encode(
+                    'utf-8') + b"\", \"corrupt_json: true"
+
+                producer.send(kafka_samples_raw_topic, key=device["device_id"], value=corrupt_payload)
                 time.sleep(0.8)
                 continue
 
@@ -107,20 +119,31 @@ def generate_stream():
                     "power": round(device["power"] + random.uniform(-30.0, 30.0), 2)
                 }
 
-            # Dispatches record to entry broker
-            producer.send(KAFKA_SAMPLES_RAW_TOPIC, key=payload["device_id"], value=payload)
+            # Dispatches verified structural records to entry broker
+            producer.send(kafka_samples_raw_topic, key=payload["device_id"], value=payload)
             log.info(
-                f"Dispatched sample {counter}: device-id={payload['device_id']} temperature={payload.get('temperature')} power={payload.get('power')}")
+                f"Dispatched sample {counter}: device-id={payload['device_id']} "
+                f"temperature={payload['temperature']} power={payload['power']}"
+            )
 
-            time.sleep(0.8)  # Throttle delay rate
+            time.sleep(0.8)
 
     except KeyboardInterrupt:
         log.info("Samples generation terminated by user request.")
     finally:
         if producer:
+            log.info("Flushing and closing Kafka producer resource linkages safely...")
             producer.flush()
             producer.close()
 
 
 if __name__ == "__main__":
-    generate_stream()
+    setup_logging()
+
+    # Consolidate environmental requirements clean fallback profiles
+    generator_config = {
+        "KAFKA_SAMPLES_RAW_TOPIC": "iot.samples.raw",
+        "KAFKA_BOOTSTRAP_SERVERS": os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
+    }
+
+    generate_stream(generator_config)

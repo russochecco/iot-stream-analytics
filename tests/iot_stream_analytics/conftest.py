@@ -11,7 +11,7 @@ def spark_session():
     spark = (
         SparkSession.builder
         .master("local[*]")
-        .appName("TelemetryTestingSandbox")
+        .appName("IoTStreamTesting")
         .config("spark.sql.shuffle.partitions", "1")
         .config("spark.ui.enabled", "false")
         .getOrCreate()

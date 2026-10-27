@@ -7,7 +7,7 @@ from pyspark.storagelevel import StorageLevel
 from pyspark.sql import SparkSession, DataFrame
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
-from utils.spark_helpers import setup_logging, get_spark_session, SAMPLE_SCHEMA
+from iot_stream_analytics.utils.spark_helpers import setup_logging, get_spark_session, SAMPLE_SCHEMA
 
 APP_NAME = "IoTStreamProcessor"
 
@@ -35,36 +35,33 @@ def extract_out_of_bounds_anomalies(telemetry_df: DataFrame) -> DataFrame:
 
 
 def write_influx_points(partition_it, url, token, org, bucket, max_chunk_size):
-    """Write an RDD partition iterator of telemetry points to InfluxDB."""
-    try:
-        with InfluxDBClient(url=url, token=token, org=org) as client:
-            write_api = client.write_api(write_options=SYNCHRONOUS)
-            points = []
+    """Write an RDD partition iterator of telemetry points to InfluxDB.
 
-            for row in partition_it:
-                point = (
-                    Point("device-telemetry")
-                    .tag("device_id", row["device_id"])
-                    .tag("sensor_id", row["sensor_id"])
-                    .field("temperature", float(row["temperature"]))
-                    .field("power", float(row["power"]))
-                    .field("network_lag_sec", float(row["network_lag_sec"]))
-                    .field("ingestion_lag_sec", float(row["ingestion_lag_sec"]))
-                    .time(row["event_timestamp"])
-                )
-                points.append(point)
+    Exceptions here bubble up cleanly through Spark back to the Driver log context.
+    """
+    with InfluxDBClient(url=url, token=token, org=org) as client:
+        write_api = client.write_api(write_options=SYNCHRONOUS)
+        points = []
 
-                if len(points) >= max_chunk_size:
-                    write_api.write(bucket=bucket, org=org, record=points, write_precision=WritePrecision.NS)
-                    points = []
+        for row in partition_it:
+            point = (
+                Point("device-telemetry")
+                .tag("device_id", row["device_id"])
+                .tag("sensor_id", row["sensor_id"])
+                .field("temperature", float(row["temperature"]))
+                .field("power", float(row["power"]))
+                .field("network_lag_sec", float(row["network_lag_sec"]))
+                .field("ingestion_lag_sec", float(row["ingestion_lag_sec"]))
+                .time(row["event_timestamp"])
+            )
+            points.append(point)
 
-            if points:
+            if len(points) >= max_chunk_size:
                 write_api.write(bucket=bucket, org=org, record=points, write_precision=WritePrecision.NS)
+                points = []
 
-    except Exception as e:
-        worker_log = logging.getLogger(f"{APP_NAME}.Worker")
-        worker_log.error(f"Worker failed due to: {e}", exc_info=True)
-        raise e
+        if points:
+            write_api.write(bucket=bucket, org=org, record=points, write_precision=WritePrecision.NS)
 
 
 def process_batch(batch_df: DataFrame, batch_id: int, config: dict):
@@ -92,25 +89,22 @@ def process_batch(batch_df: DataFrame, batch_id: int, config: dict):
     telemetry_df = compute_telemetry_metrics(samples_df).persist(StorageLevel.MEMORY_AND_DISK)
 
     try:
-        # 3. Call Functional Core to identify threshold breaches
+        # 3. Target structural anomaly payloads and route safely
         alerts_df = extract_out_of_bounds_anomalies(telemetry_df)
 
-        if alerts_df.take(1):
-            log.info(f"Detected anomalies in micro-batch {batch_id}, routing alerts to Kafka")
-            (
-                alerts_df
-                .withColumn("value", F.to_json(F.struct(
-                    "device_id", "sensor_id", "event_timestamp", "temperature", "power"
-                )))
-                .select(F.col("device_id").alias("key"), "value")
-                .write
-                .format("kafka")
-                .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
-                .option("topic", kafka_alerts_anomaly_topic)
-                .save()
-            )
-        else:
-            log.info(f"No anomalies detected in micro-batch {batch_id}")
+        # Spark safely skips empty writes instantly—no take(1) check needed
+        (
+            alerts_df
+            .withColumn("value", F.to_json(F.struct(
+                "device_id", "sensor_id", "event_timestamp", "temperature", "power"
+            )))
+            .select(F.col("device_id").alias("key"), "value")
+            .write
+            .format("kafka")
+            .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+            .option("topic", kafka_alerts_anomaly_topic)
+            .save()
+        )
 
         # 4. Freeze InfluxDB parameters via partial function mapping
         influx_worker_func = partial(
@@ -126,51 +120,45 @@ def process_batch(batch_df: DataFrame, batch_id: int, config: dict):
         telemetry_df.rdd.foreachPartition(influx_worker_func)
         log.info(f"Micro-batch {batch_id} completed successfully")
 
-    except Exception as e:
-        log.error(f"Micro-batch {batch_id} failed due to {e}", exc_info=True)
-        raise e
     finally:
+        # Guaranteed memory/disk drop to protect clustering infrastructure
         telemetry_df.unpersist()
 
 
 def run_pipeline(spark: SparkSession, config: dict):
     """Build and execute the continuous streaming directed acyclic graph (DAG)."""
-    try:
-        kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
-        starting_offsets = config["KAFKA_STARTING_OFFSETS"]
-        kafka_samples_refined_topic = config["KAFKA_SAMPLES_REFINED_TOPIC"]
-        spark_checkpoint_location = config["SPARK_CHECKPOINT_LOCATION"]
+    kafka_bootstrap_servers = config["KAFKA_BOOTSTRAP_SERVERS"]
+    starting_offsets = config["KAFKA_STARTING_OFFSETS"]
+    kafka_samples_refined_topic = config["KAFKA_SAMPLES_REFINED_TOPIC"]
+    spark_checkpoint_location = config["SPARK_CHECKPOINT_LOCATION"]
 
-        df = (
-            spark
-            .readStream
-            .format("kafka")
-            .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
-            .option("startingOffsets", starting_offsets)
-            .option("subscribe", kafka_samples_refined_topic)
-            .load()
-        )
+    df = (
+        spark
+        .readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .option("startingOffsets", starting_offsets)
+        .option("subscribe", kafka_samples_refined_topic)
+        .load()
+    )
 
-        process_batch_func = partial(process_batch, config=config)
+    process_batch_func = partial(process_batch, config=config)
 
-        query = (
-            df.writeStream
-            .foreachBatch(process_batch_func)
-            .option("checkpointLocation", f"{spark_checkpoint_location}/samples-processor")
-            .option("maxOffsetsPerTrigger", 20000)
-            .start()
-        )
+    query = (
+        df.writeStream
+        .foreachBatch(process_batch_func)
+        .option("checkpointLocation", f"{spark_checkpoint_location}/samples-processor")
+        .option("maxOffsetsPerTrigger", 20000)
+        .start()
+    )
 
-        query.awaitTermination()
-    except Exception as e:
-        log.error(f"Streaming pipeline execution halted due to exception: {str(e)}")
-        raise e
+    query.awaitTermination()
 
 
 if __name__ == "__main__":
     setup_logging(APP_NAME)
 
-    config = {
+    pipeline_config = {
         "KAFKA_ALERTS_ANOMALY_TOPIC": os.environ["KAFKA_ALERTS_ANOMALY_TOPIC"],
         "KAFKA_SAMPLES_REFINED_TOPIC": os.environ["KAFKA_SAMPLES_REFINED_TOPIC"],
         "KAFKA_BOOTSTRAP_SERVERS": os.environ["KAFKA_BOOTSTRAP_SERVERS"],
@@ -186,9 +174,9 @@ if __name__ == "__main__":
     session = get_spark_session(APP_NAME)
 
     try:
-        run_pipeline(session, config)
-    except Exception:
-        session.stop()
+        run_pipeline(session, pipeline_config)
+    except Exception as e:
+        log.exception("Streaming processing pipeline terminated unexpectedly:")
         sys.exit(1)
     finally:
         session.stop()
