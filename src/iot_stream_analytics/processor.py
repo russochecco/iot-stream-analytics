@@ -179,4 +179,5 @@ if __name__ == "__main__":
         log.exception("Streaming processing pipeline terminated unexpectedly:")
         sys.exit(1)
     finally:
+        log.info("Stopping Spark Application Session Context safely.")
         session.stop()

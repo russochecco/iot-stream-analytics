@@ -158,4 +158,5 @@ if __name__ == "__main__":
         log.exception("Streaming router execution terminated unexpectedly:")
         sys.exit(1)
     finally:
+        log.info("Stopping Spark Application Session Context safely.")
         session.stop()
